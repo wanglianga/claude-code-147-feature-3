@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""端到端验证脚本：覆盖登录、订单、房态、保洁、布草、早餐、事件、差评补偿、结算、复盘、调价。"""
+"""端到端验证脚本：覆盖登录、订单、房态、保洁、布草、早餐、事件、差评补偿、结算、复盘、调价、差评归因与补救。"""
 import json, subprocess, sys
 
 BASE = 'http://localhost:3000/api'
@@ -32,12 +32,12 @@ check('超卖被识别(10-01双床/10-04大床)', len(oversold) >= 2, str(overso
 
 print('== 3. 订单全链路 ==')
 bookings = call('GET', '/bookings', T)
-check('19张种子订单', len(bookings) == 19)
+check('20张种子订单', len(bookings) == 20)
 b3 = [b for b in bookings if b['guestName'] == '王先生一家'][0]
 detail = call('GET', f"/bookings/{b3['id']}", T)
 check('订单详情含事件链', len(detail['incidents']) >= 2)  # ac_failure + bad_review
 check('订单详情含保洁任务', detail['cleaningTask'] is not None)
-check('订单详情含差评', detail['review'] and detail['review']['rating'] == 2)
+check('订单详情含差评(客人已改4分)', detail['review'] and detail['review']['rating'] == 4)
 check('结算含佣金/补偿/押金行', len(detail['settlement']['lines']) == 7)
 s = detail['settlement']
 check('结算净额=应收-佣金-补偿+押金扣留',
@@ -135,6 +135,64 @@ check('调价应用成功', applied.get('ok') is True)
 inv2 = call('GET', '/inventory?from=2026-12-31&to=2027-01-02', T)
 t1row = [r for r in inv2 if r['typeName'] == '山景大床房'][0]
 check('新周期可售=调整值', t1row['days'][0]['sellable'] == t1['adjustedSellable'])
+
+print('== 9. 差评归因与补救 ==')
+reviews2 = call('GET', '/reviews', T)
+rv6 = [r for r in reviews2 if r['guestName'] == '吴先生'][0]
+check('差评挂三维度归因(早餐/潮湿/等待)', {i['dimension'] for i in rv6['issues']} == {'checkin_wait', 'damp', 'breakfast'})
+retro = call('GET', f"/reviews/{rv6['id']}/retrospective", T)
+ev = retro['evidence']
+check('复盘页含早餐备餐记录', len(ev['breakfastPreps']) >= 1)
+check('复盘页含除湿设备记录', len(ev['equipmentLogs']) >= 1)
+check('复盘页含保洁完成时间', len(ev['cleaningTasks']) >= 1)
+check('复盘页含布草延迟记录', any(d['status'] == 'delayed' for d in ev['linenDeliveries']))
+check('复盘页含管家沟通记录', len(ev['butlerMessages']) >= 3)
+check('归因提示:保洁晚于14:00', retro['findings']['cleaningLate'] is True)
+check('归因提示:早餐不足+设备故障', retro['findings']['breakfastShort'] and retro['findings']['equipmentFault'])
+check('管家平均响应时长可算', retro['findings']['avgButlerResponseMin'] is not None)
+iss = retro['issues'][0]
+v = call('POST', f"/review-issues/{iss['id']}/verify", T, {'status': 'confirmed', 'note': '保洁16:20才完成，属实'})
+check('归因核实为属实', v['status'] == 'confirmed' and v['evidenceNote'])
+# 电话道歉 → 客人拒绝 → 退款 → 客人接受 → 观察 → 客人改评
+r1 = call('POST', f"/remediations/for-review/{rv6['id']}", T, {'action': 'phone_apology', 'note': '店主致电致歉'})
+check('电话道歉补救发起(零成本)', r1['status'] == 'pending' and r1['amount'] == 0)
+rj = call('POST', f"/remediations/{r1['id']}/respond", T, {'accept': False, 'note': '客人认为诚意不足'})
+check('客人拒绝道歉', rj['status'] == 'rejected')
+r2 = call('POST', f"/remediations/for-review/{rv6['id']}", T, {'action': 'refund', 'amount': 200, 'note': '退款200元致歉'})
+check('退款补救生成补偿记录', r2['status'] == 'pending' and r2['compensationId'] is not None)
+ra = call('POST', f"/remediations/{r2['id']}/respond", T, {'accept': True})
+check('客人接受退款', ra['status'] == 'accepted')
+retro1 = call('GET', f"/reviews/{rv6['id']}/retrospective", T)
+check('接受后差评事件关闭', all(i['status'] != 'open' for i in retro1['evidence']['incidents'] if i['type'] == 'bad_review'))
+check('接受后进入观察期', retro1['review']['watching'] is True)
+r3 = call('POST', f"/remediations/for-review/{rv6['id']}", T, {'action': 'voucher', 'amount': 80})
+check('补偿券补救生成券码', r3.get('voucherCode', '').startswith('VC'))
+dup = call('POST', f"/remediations/for-review/{rv6['id']}", T, {'action': 'refund', 'amount': 10})
+check('待回应时重复补救被拒', dup.get('statusCode') == 400)
+call('POST', f"/remediations/{r3['id']}/respond", T, {'accept': True})
+am = call('POST', f"/reviews/{rv6['id']}/amend", T, {'rating': 4, 'content': '店家退款又补券，处理到位'})
+check('客人改回4分观察结束', am['rating'] == 4 and am['watching'] is False)
+retro2 = call('GET', f"/reviews/{rv6['id']}/retrospective", T)
+check('差评修改历史已记录', len(retro2['amendments']) >= 1 and retro2['amendments'][0]['oldRating'] == 2)
+rv5 = [r for r in call('GET', '/reviews', T) if r['guestName'] == '刘女士' and r['rating'] <= 3][0]
+rn = call('POST', f"/remediations/for-review/{rv5['id']}", T, {'action': 'none', 'note': '押金已按流程退还'})
+check('不予补偿直接关闭并观察', rn['status'] == 'closed')
+
+print('== 10. 渠道评分恢复 / 真实获客成本 / 旺季排班 ==')
+rec = call('GET', '/analytics/channel-recovery', T)
+mini = [r for r in rec['rows'] if r['channel'] == '小程序'][0]
+check('小程序差评恢复(2→4分)', mini['recoveredCount'] >= 1 and mini['avgCurrentRating'] > mini['avgOriginalRating'])
+ota_rec = [r for r in rec['rows'] if r['channel'] == 'OTA平台'][0]
+check('OTA补救接受率被计算', ota_rec['acceptanceRate'] is not None and ota_rec['accepted'] >= 2)
+cac = call('GET', '/analytics/channel-cac?from=2026-10-01&to=2026-10-08', T)
+ota = [r for r in cac['rows'] if r['channel'] == 'OTA平台'][0]
+check('获客成本=佣金+补偿成本', abs(ota['acquisitionCost'] - (ota['commission'] + ota['compensation'])) < 0.01)
+check('补偿成本计入OTA获客成本', ota['compensation'] > 0)
+check('单均CAC=获客成本/订单数', abs(ota['cacPerBooking'] - ota['acquisitionCost'] / ota['bookings']) < 0.01)
+sp = call('GET', '/analytics/staffing-plan', T)
+check('排班建议含保洁/管家/厨房', {r['role'] for r in sp['rows']} == {'cleaner', 'housekeeper', 'kitchen'})
+check('排班参考补救接受率', sp['basis']['remediationAcceptanceRate'] is not None)
+check('早餐不足驱动厨房增员建议', [r for r in sp['rows'] if r['role'] == 'kitchen'][0]['suggested'] > 1)
 
 print(f'\n结果: {ok} 通过, {fail} 失败')
 sys.exit(1 if fail else 0)

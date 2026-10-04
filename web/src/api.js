@@ -53,3 +53,21 @@ export const TASK_STATUS = {
 };
 export const DIRTINESS = { light: '轻度', normal: '正常', heavy: '重度' };
 export const INCIDENT_STATUS = { open: { text: '待处理', color: 'red' }, processing: { text: '处理中', color: 'orange' }, resolved: { text: '已解决', color: 'green' } };
+// 差评归因维度
+export const ISSUE_DIMENSIONS = {
+  breakfast: '早餐供应', damp: '房间潮湿', checkin_wait: '入住等待', ac: '空调硬件',
+  hygiene: '卫生', service: '服务', oversell: '超卖', other: '其他',
+};
+export const ISSUE_STATUS = {
+  pending: { text: '待核实', color: 'orange' },
+  confirmed: { text: '属实', color: 'red' },
+  rejected: { text: '不成立', color: 'default' },
+};
+// 补救方式与状态
+export const REMEDIATION_ACTIONS = { refund: '退款', voucher: '补偿券', phone_apology: '电话道歉', none: '不予补偿' };
+export const REMEDIATION_STATUS = {
+  pending: { text: '待客人回应', color: 'orange' },
+  accepted: { text: '客人已接受', color: 'green' },
+  rejected: { text: '客人已拒绝', color: 'red' },
+  closed: { text: '不予补偿', color: 'default' },
+};

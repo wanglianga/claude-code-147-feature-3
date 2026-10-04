@@ -4,8 +4,9 @@ import {
 import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { Between, Repository } from 'typeorm';
 import {
-  Booking, BreakfastPrep, Compensation, DailyInventory, Incident,
-  LinenDelivery, LinenItem, MaintenanceTicket, Review, Room, RoomType, CleaningTask,
+  Booking, BreakfastPrep, ButlerMessage, Channel, CleaningTask, Compensation, DailyInventory,
+  Incident, LinenDelivery, LinenItem, MaintenanceTicket, Remediation, Review,
+  ReviewAmendment, Room, RoomType, User,
 } from '../entities';
 import { Roles } from '../common/auth';
 import { addDays, diffDays, eachDay, overlapNights, round2, todayStr } from '../common/util';
@@ -30,6 +31,11 @@ export class AnalyticsController {
     @InjectRepository(BreakfastPrep) private preps: Repository<BreakfastPrep>,
     @InjectRepository(DailyInventory) private inventory: Repository<DailyInventory>,
     @InjectRepository(MaintenanceTicket) private maintenance: Repository<MaintenanceTicket>,
+    @InjectRepository(Channel) private channels: Repository<Channel>,
+    @InjectRepository(User) private users: Repository<User>,
+    @InjectRepository(Remediation) private remediations: Repository<Remediation>,
+    @InjectRepository(ReviewAmendment) private amendments: Repository<ReviewAmendment>,
+    @InjectRepository(ButlerMessage) private messages: Repository<ButlerMessage>,
   ) {}
 
   private async bookingsInRange(from: string, to: string) {
@@ -234,6 +240,160 @@ export class AnalyticsController {
     return { rows };
   }
 
+  // 渠道评分恢复：补救是否被客人接受 + 客人是否修改差评，共同决定渠道评分恢复度
+  @Get('channel-recovery')
+  async channelRecovery() {
+    const channels = await this.channels.find({ order: { id: 'ASC' } });
+    const reviews = await this.reviews.find({ relations: ['booking'] });
+    const rems = await this.remediations.find();
+    const amends = await this.amendments.find({ order: { id: 'ASC' } });
+    const rows = channels.map((ch) => {
+      const chReviews = reviews.filter((r) => (r.booking as any)?.channelId === ch.id);
+      const originalOf = (r: Review) => {
+        const first = amends.filter((a) => a.reviewId === r.id)[0];
+        return first ? first.oldRating : r.rating;
+      };
+      const badOriginal = chReviews.filter((r) => originalOf(r) <= 3);
+      const chRems = rems.filter((m) => badOriginal.some((r) => r.id === m.reviewId));
+      const accepted = chRems.filter((m) => m.status === 'accepted').length;
+      const rejected = chRems.filter((m) => m.status === 'rejected').length;
+      const responded = accepted + rejected;
+      const recovered = badOriginal.filter((r) => r.rating > 3).length; // 客人修改后回到 4 分以上
+      const amended = badOriginal.filter((r) => amends.some((a) => a.reviewId === r.id)).length;
+      return {
+        channelId: ch.id, channel: ch.name,
+        reviewCount: chReviews.length,
+        badReviewCount: badOriginal.length,
+        remediated: new Set(chRems.map((m) => m.reviewId)).size,
+        accepted, rejected,
+        noneCount: chRems.filter((m) => m.action === 'none').length,
+        acceptanceRate: responded ? round2((accepted / responded) * 100) : null, // 补救接受率（排班参考）
+        amendedCount: amended,
+        recoveredCount: recovered,
+        recoveryRate: badOriginal.length ? round2((recovered / badOriginal.length) * 100) : 0, // 差评恢复率
+        avgOriginalRating: chReviews.length ? round2(chReviews.reduce((s, r) => s + originalOf(r), 0) / chReviews.length) : null,
+        avgCurrentRating: chReviews.length ? round2(chReviews.reduce((s, r) => s + r.rating, 0) / chReviews.length) : null,
+        watching: chReviews.filter((r) => r.watching).length, // 仍在观察中的差评
+      };
+    });
+    return { rows };
+  }
+
+  // 渠道真实获客成本：渠道佣金 + 差评补偿成本，摊到每单/每间夜
+  @Get('channel-cac')
+  async channelCac(@Query('from') from?: string, @Query('to') to?: string) {
+    const start = from || addDays(todayStr(), -14);
+    const end = to || todayStr();
+    const channels = await this.channels.find({ order: { id: 'ASC' } });
+    const bookings = (await this.bookingsInRange(start, end))
+      .filter((b) => b.checkIn >= start && b.checkIn <= end);
+    const comps = await this.compensations.find();
+    const rows = channels.map((ch) => {
+      const chBookings = bookings.filter((b) => b.channelId === ch.id);
+      const commission = chBookings.reduce((s, b) => s + Number(b.roomFee) * Number((b.channel as any)?.commissionRate || 0), 0);
+      const compensation = comps
+        .filter((c) => c.status !== 'cancelled' && chBookings.some((b) => b.id === c.bookingId))
+        .reduce((s, c) => s + Number(c.amount), 0);
+      const nights = chBookings.reduce((s, b) => s + b.nights, 0);
+      const gross = chBookings.reduce((s, b) => s + Number(b.totalAmount), 0);
+      const acquisitionCost = round2(commission + compensation); // 真实获客成本 = 佣金 + 补偿成本
+      return {
+        channelId: ch.id, channel: ch.name,
+        bookings: chBookings.length, nights,
+        gross: round2(gross),
+        commission: round2(commission),
+        compensation: round2(compensation),
+        acquisitionCost,
+        cacPerBooking: chBookings.length ? round2(acquisitionCost / chBookings.length) : 0,
+        cacPerNight: nights ? round2(acquisitionCost / nights) : 0,
+        costRatio: gross > 0 ? round2((acquisitionCost / gross) * 100) : 0, // 获客成本占收入比
+      };
+    });
+    const totalCost = rows.reduce((s, r) => s + r.acquisitionCost, 0);
+    const totalBookings = rows.reduce((s, r) => s + r.bookings, 0);
+    return {
+      range: { from: start, to: end }, rows,
+      totals: {
+        acquisitionCost: round2(totalCost), bookings: totalBookings,
+        cacPerBooking: totalBookings ? round2(totalCost / totalBookings) : 0,
+      },
+    };
+  }
+
+  // 下一轮旺季排班建议：参考本次旺季保洁峰值、早餐缺口、管家响应与补救接受率
+  @Get('staffing-plan')
+  async staffingPlan(@Query('from') from?: string, @Query('to') to?: string) {
+    const start = from || '2026-12-31';
+    const end = to || '2027-01-02';
+    const days = diffDays(start, end) + 1;
+    const users = await this.users.find();
+    const tasks = await this.cleaning.find();
+    const preps = await this.preps.find();
+    const deliveries = await this.deliveries.find();
+    const messages = await this.messages.find();
+    const rems = await this.remediations.find();
+    const reviews = await this.reviews.find();
+    const amends = await this.amendments.find();
+
+    // 保洁：峰值日任务量 × 平均时长 / 班次有效工时(6h)
+    const byDate: Record<string, CleaningTask[]> = {};
+    for (const t of tasks) byDate[t.date] = [...(byDate[t.date] || []), t];
+    const peakDate = Object.entries(byDate).sort((a, b) => b[1].length - a[1].length)[0];
+    const durationOf = (d: string) => (d === 'heavy' ? 70 : d === 'light' ? 30 : 45);
+    const peakTasks = peakDate ? peakDate[1].length : 0;
+    const avgMin = tasks.length ? tasks.reduce((s, t) => s + durationOf(t.dirtiness), 0) / tasks.length : 45;
+    const linenDelayRate = deliveries.length ? deliveries.filter((d) => d.status === 'delayed').length / deliveries.length : 0;
+    const cleanersNow = users.filter((u) => u.role === 'cleaner').length;
+    let cleanersNeed = Math.max(cleanersNow, Math.ceil((peakTasks * avgMin) / 360));
+    const cleanerReasons = [`旺季峰值日 ${peakDate?.[0] || '-'} 共 ${peakTasks} 单保洁，单均 ${Math.round(avgMin)} 分钟`];
+    if (linenDelayRate > 0.2) {
+      cleanersNeed += 1;
+      cleanerReasons.push(`布草延迟率 ${round2(linenDelayRate * 100)}%，保洁周转需冗余人力`);
+    }
+
+    // 管家：响应时长 + 补救接受率（接受率低说明沟通与补救方案需加强）
+    let respSum = 0; let respCnt = 0;
+    const sorted = [...messages].sort((a, b) => +new Date(a.sentAt) - +new Date(b.sentAt));
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].direction !== 'guest') continue;
+      const reply = sorted.slice(i + 1).find((m) => m.direction === 'butler' && m.bookingId === sorted[i].bookingId);
+      if (reply) { respSum += (+new Date(reply.sentAt) - +new Date(sorted[i].sentAt)) / 60000; respCnt += 1; }
+    }
+    const avgRespMin = respCnt ? Math.round(respSum / respCnt) : 0;
+    const accepted = rems.filter((m) => m.status === 'accepted').length;
+    const rejected = rems.filter((m) => m.status === 'rejected').length;
+    const acceptanceRate = accepted + rejected ? accepted / (accepted + rejected) : 1;
+    const stewardsNow = users.filter((u) => u.role === 'housekeeper').length;
+    let stewardsNeed = stewardsNow;
+    const stewardReasons = [`管家平均响应 ${avgRespMin} 分钟，补救接受率 ${round2(acceptanceRate * 100)}%`];
+    if (avgRespMin > 45) { stewardsNeed += 1; stewardReasons.push('响应超过 45 分钟，入住高峰需加 1 名管家'); }
+    if (acceptanceRate < 0.6) { stewardsNeed += 1; stewardReasons.push('补救接受率偏低，需专人跟进安抚与回访'); }
+
+    // 厨房：早餐不足天数 → 备餐上浮 + 帮厨
+    const shortageDays = preps.filter((p) => p.status === 'shortage' || p.preparedPortions < p.requiredPortions).length;
+    const peakRequired = preps.length ? Math.max(...preps.map((p) => p.requiredPortions)) : 0;
+    const kitchenNow = users.filter((u) => u.role === 'kitchen').length;
+    let kitchenNeed = kitchenNow;
+    const kitchenReasons = [`峰值日早餐需求 ${peakRequired} 份，供应不足 ${shortageDays} 天`];
+    if (shortageDays > 0) { kitchenNeed += 1; kitchenReasons.push('建议按峰值上浮 15% 备餐并加 1 名帮厨'); }
+
+    // 补救被接受且客人改回高分 → 差评恢复，可少派安抚人力；反之加强
+    const recovered = reviews.filter((r) => r.rating > 3 && amends.some((a) => a.reviewId === r.id && a.oldRating <= 3)).length;
+    return {
+      range: { from: start, to: end, days },
+      basis: {
+        peakTasks, avgCleanMin: Math.round(avgMin), linenDelayRate: round2(linenDelayRate * 100),
+        avgButlerResponseMin: avgRespMin, remediationAcceptanceRate: round2(acceptanceRate * 100),
+        breakfastShortageDays: shortageDays, recoveredBadReviews: recovered,
+      },
+      rows: [
+        { role: 'cleaner', roleName: '保洁', current: cleanersNow, suggested: cleanersNeed, reasons: cleanerReasons },
+        { role: 'housekeeper', roleName: '管家', current: stewardsNow, suggested: stewardsNeed, reasons: stewardReasons },
+        { role: 'kitchen', roleName: '厨房', current: kitchenNow, suggested: kitchenNeed, reasons: kitchenReasons },
+      ],
+    };
+  }
+
   // 应用调整：为下一轮节假日生成调整后的可售库存
   @Post('apply-adjustment')
   async applyAdjustment(@Body() body: { from: string; to: string }) {
@@ -260,6 +420,7 @@ export class AnalyticsController {
   imports: [TypeOrmModule.forFeature([
     Booking, Room, RoomType, Incident, Review, Compensation, CleaningTask,
     LinenItem, LinenDelivery, BreakfastPrep, DailyInventory, MaintenanceTicket,
+    Channel, User, Remediation, ReviewAmendment, ButlerMessage,
   ])],
   controllers: [AnalyticsController],
 })

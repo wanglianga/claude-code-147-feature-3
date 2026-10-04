@@ -4,7 +4,7 @@ import { Layout, Menu, Dropdown, Avatar, Tag } from 'antd';
 import {
   DashboardOutlined, CalendarOutlined, BookOutlined, ClearOutlined,
   CoffeeOutlined, ToolOutlined, AlertOutlined, AccountBookOutlined,
-  LineChartOutlined, UserOutlined, LogoutOutlined,
+  LineChartOutlined, UserOutlined, LogoutOutlined, FrownOutlined,
 } from '@ant-design/icons';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
@@ -14,6 +14,7 @@ import Cleaning from './pages/Cleaning';
 import Breakfast from './pages/Breakfast';
 import Maintenance from './pages/Maintenance';
 import Incidents from './pages/Incidents';
+import ReviewCenter from './pages/ReviewCenter';
 import Settlements from './pages/Settlements';
 import Analytics from './pages/Analytics';
 
@@ -27,6 +28,7 @@ const MENU = [
   { key: '/breakfast', icon: <CoffeeOutlined />, label: '早餐备餐' },
   { key: '/maintenance', icon: <ToolOutlined />, label: '维修工单' },
   { key: '/incidents', icon: <AlertOutlined />, label: '事件与差评' },
+  { key: '/reviews', icon: <FrownOutlined />, label: '差评复盘' },
   { key: '/settlements', icon: <AccountBookOutlined />, label: '结算中心' },
   { key: '/analytics', icon: <LineChartOutlined />, label: '旺季复盘' },
 ];
@@ -80,6 +82,7 @@ export default function App() {
         <Route path="/breakfast" element={<Guard><Breakfast /></Guard>} />
         <Route path="/maintenance" element={<Guard><Maintenance /></Guard>} />
         <Route path="/incidents" element={<Guard><Incidents /></Guard>} />
+        <Route path="/reviews" element={<Guard><ReviewCenter /></Guard>} />
         <Route path="/settlements" element={<Guard><Settlements /></Guard>} />
         <Route path="/analytics" element={<Guard><Analytics /></Guard>} />
         <Route path="*" element={<Navigate to="/" replace />} />

@@ -214,11 +214,83 @@ export class Review {
   @PrimaryGeneratedColumn() id: number;
   @Column() bookingId: number;
   @ManyToOne(() => Booking) @JoinColumn({ name: 'bookingId' }) booking: Booking;
-  @Column() rating: number; // 1-5，<=3 为差评
+  @Column() rating: number; // 1-5，<=3 为差评（当前评分，客人修改后更新）
   @Column() category: string; // hardware 硬件 | service 服务 | oversell 超卖 | food 餐食
   @Column({ type: 'text' }) content: string;
   @Column({ default: false }) compensated: boolean;
+  @Column({ default: false }) watching: boolean; // 补救完成后持续观察客人是否修改差评
   @CreateDateColumn() createdAt: Date;
+}
+
+// 差评归因维度：一条差评可挂多个归因（早餐少/房间潮湿/入住等待久…）
+@Entity('review_issues')
+export class ReviewIssue {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() reviewId: number;
+  // breakfast 早餐供应 | damp 房间潮湿 | checkin_wait 入住等待 | ac 空调硬件
+  // hygiene 卫生 | service 服务 | oversell 超卖 | other 其他
+  @Column() dimension: string;
+  @Column({ default: '' }) detail: string;
+  @Column({ default: 'pending' }) status: string; // pending 待核实 | confirmed 属实 | rejected 不成立
+  @Column({ default: '' }) evidenceNote: string; // 核实结论（对应复盘页证据）
+  @CreateDateColumn() createdAt: Date;
+}
+
+// 除湿等设备运行记录（复盘页证据之一）
+@Entity('equipment_logs')
+export class EquipmentLog {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() roomId: number;
+  @ManyToOne(() => Room) @JoinColumn({ name: 'roomId' }) room: Room;
+  @Column() device: string; // 除湿机 | 空调 | 新风
+  @Column({ type: 'timestamptz' }) recordedAt: Date;
+  @Column({ type: 'int', nullable: true }) humidity: number; // 湿度 %
+  @Column({ default: 'normal' }) status: string; // normal | fault | offline
+  @Column({ default: '' }) note: string;
+}
+
+// 管家沟通记录（复盘页证据之一）
+@Entity('butler_messages')
+export class ButlerMessage {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() bookingId: number;
+  @ManyToOne(() => Booking) @JoinColumn({ name: 'bookingId' }) booking: Booking;
+  @Column({ type: 'timestamptz' }) sentAt: Date;
+  @Column({ default: '微信' }) channel: string; // 微信 | 电话 | 短信 | 到店
+  @Column() direction: string; // guest 客人→管家 | butler 管家→客人
+  @Column({ type: 'text' }) content: string;
+  @Column({ default: '' }) handlerName: string; // 处理人（管家）
+}
+
+// 补救决策：退款 / 补偿券 / 电话道歉 / 不予补偿，并跟踪客人是否接受
+@Entity('remediations')
+export class Remediation {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() reviewId: number;
+  @Column() bookingId: number;
+  @Column() action: string; // refund 退款 | voucher 补偿券 | phone_apology 电话道歉 | none 不予补偿
+  @Money() amount: number;
+  @Column({ nullable: true }) voucherCode: string;
+  // pending 待客人回应 | accepted 客人接受 | rejected 客人拒绝 | closed 已关闭（不予补偿）
+  @Column({ default: 'pending' }) status: string;
+  @Column({ default: '' }) note: string;
+  @Column({ default: '' }) createdBy: string; // 决策人（店主/管家）
+  @Column({ nullable: true }) compensationId: number; // 关联的补偿记录（退款/补偿券）
+  @Column({ type: 'timestamptz', nullable: true }) respondedAt: Date;
+  @Column({ default: '' }) guestNote: string; // 客人回应备注
+  @CreateDateColumn() createdAt: Date;
+}
+
+// 差评修改观察：客人修改评分/内容的历史
+@Entity('review_amendments')
+export class ReviewAmendment {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() reviewId: number;
+  @Column() oldRating: number;
+  @Column() newRating: number;
+  @Column({ type: 'text', default: '' }) oldContent: string;
+  @Column({ type: 'text', default: '' }) newContent: string;
+  @Column({ type: 'timestamptz', default: () => 'now()' }) amendedAt: Date;
 }
 
 @Entity('compensations')
@@ -239,4 +311,5 @@ export const ALL_ENTITIES = [
   User, RoomType, Room, Channel, DailyPrice, DailyInventory, Booking,
   CleaningTask, LinenItem, LinenDelivery, MaintenanceTicket, BreakfastPrep,
   Incident, Review, Compensation,
+  ReviewIssue, EquipmentLog, ButlerMessage, Remediation, ReviewAmendment,
 ];

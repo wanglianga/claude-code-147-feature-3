@@ -12,19 +12,27 @@ export default function Analytics() {
   const [range, setRange] = useState([dayjs('2026-10-01'), dayjs('2026-10-08')]);
   const [profit, setProfit] = useState(null);
   const [adjustment, setAdjustment] = useState(null);
+  const [recovery, setRecovery] = useState(null);
+  const [cac, setCac] = useState(null);
+  const [staffing, setStaffing] = useState(null);
   const [nextRange, setNextRange] = useState([dayjs('2026-12-31'), dayjs('2027-01-02')]);
 
   const load = async (r = range) => {
     const params = { from: r[0].format('YYYY-MM-DD'), to: r[1].format('YYYY-MM-DD') };
-    const [p, a] = await Promise.all([
+    const [p, a, rec, c, s] = await Promise.all([
       api.get('/analytics/profit', { params }),
       api.get('/analytics/adjustment'),
+      api.get('/analytics/channel-recovery'),
+      api.get('/analytics/channel-cac', { params }),
+      api.get('/analytics/staffing-plan', {
+        params: { from: nextRange[0].format('YYYY-MM-DD'), to: nextRange[1].format('YYYY-MM-DD') },
+      }),
     ]);
-    setProfit(p); setAdjustment(a);
+    setProfit(p); setAdjustment(a); setRecovery(rec); setCac(c); setStaffing(s);
   };
   useEffect(() => { load(); }, []);
 
-  if (!profit || !adjustment) return <Card loading />;
+  if (!profit || !adjustment || !recovery || !cac || !staffing) return <Card loading />;
   const seg = profit.serviceSegments;
 
   const profitCols = [
@@ -87,6 +95,60 @@ export default function Analytics() {
                 message={<Space><Tag color={CLASS_COLORS[c.type]}>{c.type}</Tag>{c.evidence}</Space>}
                 description={`建议：${c.suggestion}`} />
             ))}
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="渠道评分恢复（参考补救是否被客人接受）">
+            <Table dataSource={recovery.rows} rowKey="channelId" size="small" pagination={false} columns={[
+              { title: '渠道', dataIndex: 'channel', width: 90 },
+              { title: '差评', dataIndex: 'badReviewCount', width: 60 },
+              { title: '已补救', dataIndex: 'remediated', width: 70 },
+              { title: '接受率', dataIndex: 'acceptanceRate', width: 80, render: (v) => v === null ? '-' : <b style={{ color: v >= 60 ? '#2f6b4f' : '#cf1322' }}>{v}%</b> },
+              { title: '客人改评', dataIndex: 'amendedCount', width: 80 },
+              { title: '恢复率', dataIndex: 'recoveryRate', width: 80, render: (v) => `${v}%` },
+              {
+                title: '均分(原始→当前)', width: 130, render: (_, r) => (
+                  r.avgOriginalRating === null ? '-' : (
+                    <span>{r.avgOriginalRating} → <b style={{ color: r.avgCurrentRating > r.avgOriginalRating ? '#2f6b4f' : undefined }}>{r.avgCurrentRating}</b></span>
+                  )
+                ),
+              },
+              { title: '观察中', dataIndex: 'watching', width: 70, render: (v) => v > 0 ? <Tag color="processing">{v}</Tag> : '0' },
+            ]} />
+          </Card>
+        </Col>
+        <Col xs={24} lg={12}>
+          <Card title="渠道真实获客成本（佣金 + 差评补偿成本）">
+            <Table dataSource={cac.rows} rowKey="channelId" size="small" pagination={false} columns={[
+              { title: '渠道', dataIndex: 'channel', width: 90 },
+              { title: '订单', dataIndex: 'bookings', width: 60 },
+              { title: '佣金', dataIndex: 'commission', align: 'right', render: (v) => `¥${v}` },
+              { title: '补偿成本', dataIndex: 'compensation', align: 'right', render: (v) => v > 0 ? <span style={{ color: '#cf1322' }}>¥{v}</span> : '-' },
+              { title: '获客成本', dataIndex: 'acquisitionCost', align: 'right', render: (v) => <b>¥{v}</b> },
+              { title: '单均CAC', dataIndex: 'cacPerBooking', align: 'right', render: (v) => `¥${v}` },
+              { title: '间夜CAC', dataIndex: 'cacPerNight', align: 'right', render: (v) => `¥${v}` },
+              { title: '成本占比', dataIndex: 'costRatio', width: 90, render: (v) => <span style={{ color: v > 10 ? '#cf1322' : undefined }}>{v}%</span> },
+            ]} />
+            <Alert style={{ marginTop: 8 }} type="info" showIcon
+              message={`全渠道真实获客成本 ¥${cac.totals.acquisitionCost}，单均 CAC ¥${cac.totals.cacPerBooking}（${cac.range.from} ~ ${cac.range.to}）`} />
+          </Card>
+        </Col>
+        <Col span={24}>
+          <Card title={`下次旺季排班建议（${staffing.range.from} ~ ${staffing.range.to}，参考补救接受率 ${staffing.basis.remediationAcceptanceRate}%）`}>
+            <Row gutter={16}>
+              {staffing.rows.map((r) => (
+                <Col xs={24} md={8} key={r.role}>
+                  <Card size="small" title={`${r.roleName}：${r.current} 人 → 建议 ${r.suggested} 人`}
+                    headStyle={{ background: r.suggested > r.current ? '#fff7e6' : '#f6ffed' }}>
+                    <Statistic title="建议增员" value={Math.max(0, r.suggested - r.current)} suffix="人"
+                      valueStyle={{ color: r.suggested > r.current ? '#d46b08' : '#2f6b4f' }} />
+                    {r.reasons.map((x, i) => <div key={i} style={{ fontSize: 12, color: '#666' }}>· {x}</div>)}
+                  </Card>
+                </Col>
+              ))}
+            </Row>
+            <Alert style={{ marginTop: 12 }} type="info" showIcon
+              message={`排班依据：峰值日保洁 ${staffing.basis.peakTasks} 单（单均 ${staffing.basis.avgCleanMin} 分钟）、布草延迟率 ${staffing.basis.linenDelayRate}%、管家平均响应 ${staffing.basis.avgButlerResponseMin} 分钟、补救接受率 ${staffing.basis.remediationAcceptanceRate}%、早餐不足 ${staffing.basis.breakfastShortageDays} 天、已恢复差评 ${staffing.basis.recoveredBadReviews} 条`} />
           </Card>
         </Col>
         <Col span={24}>
