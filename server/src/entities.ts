@@ -208,16 +208,25 @@ export class Incident {
   @Column({ default: '' }) resolution: string;
 }
 
-// ---------- 差评与补偿 ----------
+// ---------- 差评、归因与补救 ----------
 @Entity('reviews')
 export class Review {
   @PrimaryGeneratedColumn() id: number;
   @Column() bookingId: number;
   @ManyToOne(() => Booking) @JoinColumn({ name: 'bookingId' }) booking: Booking;
-  @Column() rating: number; // 1-5，<=3 为差评
+  @Column() rating: number; // 当前评分 1-5（客人改评后更新）
+  @Column({ nullable: true }) originalRating: number; // 客人首次评分（改评前留档）
   @Column() category: string; // hardware 硬件 | service 服务 | oversell 超卖 | food 餐食
+  // 复盘归因标签（逗号分隔）：breakfast 早餐少 | damp 房间潮湿 | wait 入住等待久 | linen 布草延迟 | cleaning 保洁延迟
+  @Column({ default: '' }) tags: string;
   @Column({ type: 'text' }) content: string;
   @Column({ default: false }) compensated: boolean;
+  // 改评观察：none 无需观察 | observing 补救后观察中 | revised 客人已修改差评 | unchanged 观察结束未改评
+  @Column({ default: 'none' }) monitorStatus: string;
+  @Column({ nullable: true }) revisedRating: number;
+  @Column({ type: 'text', default: '' }) revisedContent: string;
+  @Column({ type: 'timestamptz', nullable: true }) revisedAt: Date;
+  @Column({ type: 'timestamptz', nullable: true }) monitoredAt: Date;
   @CreateDateColumn() createdAt: Date;
 }
 
@@ -225,6 +234,7 @@ export class Review {
 export class Compensation {
   @PrimaryGeneratedColumn() id: number;
   @Column({ nullable: true }) reviewId: number;
+  @Column({ nullable: true }) remediationId: number; // 来源补救单
   @Column({ nullable: true }) incidentId: number;
   @Column({ nullable: true }) bookingId: number;
   @Column() type: string; // cash 现金 | voucher 补偿券 | refund 退款
@@ -235,8 +245,67 @@ export class Compensation {
   @CreateDateColumn() createdAt: Date;
 }
 
+// 店主补救决策：refund 退款 | voucher 补偿券 | call 电话道歉 | none 不予补偿
+@Entity('remediations')
+export class Remediation {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() reviewId: number;
+  @Column() bookingId: number;
+  @Column() channelId: number;
+  @Column() action: string; // refund | voucher | call | none
+  @Money() amount: number;
+  @Column({ nullable: true }) voucherCode: string;
+  @Column({ default: '' }) note: string;
+  // proposed 已决定待回应 | accepted 客人接受 | rejected 客人拒绝 | void 已被新决策作废 | closed 不予补偿无需回应
+  @Column({ default: 'proposed' }) status: string;
+  @Column({ default: '' }) decidedBy: string;
+  @Column({ type: 'timestamptz', default: () => 'now()' }) decidedAt: Date;
+  @Column({ type: 'timestamptz', nullable: true }) guestRespondedAt: Date;
+  @Column({ default: '' }) guestNote: string;
+}
+
+// ---------- 除湿等设备 ----------
+@Entity('equipments')
+export class Equipment {
+  @PrimaryGeneratedColumn() id: number;
+  @Column({ unique: true }) code: string; // 设备编号，如 DH-01
+  @Column() name: string;
+  @Column({ default: 'dehumidifier' }) type: string; // dehumidifier 除湿机
+  @Column({ nullable: true }) roomId: number; // 常用/放置房间
+  @ManyToOne(() => Room, { nullable: true }) @JoinColumn({ name: 'roomId' }) room: Room;
+  @Column({ default: 'normal' }) status: string; // normal 正常 | abnormal 异常
+}
+
+@Entity('equipment_logs')
+export class EquipmentLog {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() equipmentId: number;
+  @ManyToOne(() => Equipment) @JoinColumn({ name: 'equipmentId' }) equipment: Equipment;
+  @Column({ nullable: true }) roomId: number;
+  @Column({ nullable: true }) bookingId: number;
+  @Column({ type: 'date' }) date: string;
+  @Column({ default: 'normal' }) status: string; // normal | abnormal
+  @Column({ nullable: true }) humidity: number; // 房间湿度 %
+  @Column({ default: '' }) note: string;
+  @Column({ type: 'timestamptz', default: () => 'now()' }) recordedAt: Date;
+}
+
+// ---------- 管家沟通记录 ----------
+@Entity('guest_comms')
+export class GuestComm {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() bookingId: number;
+  @ManyToOne(() => Booking) @JoinColumn({ name: 'bookingId' }) booking: Booking;
+  @Column({ default: 'wechat' }) channel: string; // face 当面 | phone 电话 | wechat 微信
+  @Column({ default: 'outbound' }) direction: string; // outbound 管家发起 | inbound 客人发起
+  @Column({ type: 'timestamptz' }) at: Date;
+  @Column({ type: 'text' }) content: string;
+  @Column({ default: '' }) staffName: string;
+  @CreateDateColumn() createdAt: Date;
+}
+
 export const ALL_ENTITIES = [
   User, RoomType, Room, Channel, DailyPrice, DailyInventory, Booking,
   CleaningTask, LinenItem, LinenDelivery, MaintenanceTicket, BreakfastPrep,
-  Incident, Review, Compensation,
+  Incident, Review, Compensation, Remediation, Equipment, EquipmentLog, GuestComm,
 ];

@@ -4,8 +4,8 @@ import { DataSource, Repository } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import {
   ALL_ENTITIES, Booking, BreakfastPrep, Channel, CleaningTask, Compensation,
-  DailyInventory, DailyPrice, Incident, LinenDelivery, LinenItem, MaintenanceTicket,
-  Review, Room, RoomType, User,
+  DailyInventory, DailyPrice, Equipment, EquipmentLog, GuestComm, Incident,
+  LinenDelivery, LinenItem, MaintenanceTicket, Remediation, Review, Room, RoomType, User,
 } from './entities';
 import { eachDay, round2 } from './common/util';
 
@@ -33,6 +33,10 @@ export class SeedService implements OnApplicationBootstrap {
     @InjectRepository(Incident) private incidents: Repository<Incident>,
     @InjectRepository(Review) private reviews: Repository<Review>,
     @InjectRepository(Compensation) private compensations: Repository<Compensation>,
+    @InjectRepository(Remediation) private remediations: Repository<Remediation>,
+    @InjectRepository(Equipment) private equipments: Repository<Equipment>,
+    @InjectRepository(EquipmentLog) private equipLogs: Repository<EquipmentLog>,
+    @InjectRepository(GuestComm) private comms: Repository<GuestComm>,
     private dataSource: DataSource,
   ) {}
 
@@ -168,6 +172,9 @@ export class SeedService implements OnApplicationBootstrap {
     const bk13 = await mkBooking({ room: '101', channel: ota, guest: '曹先生', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
     const bk14 = await mkBooking({ room: '101', channel: ota, guest: '谢女士', in: '2026-10-04', out: '2026-10-05', adults: 2, breakfast: 2 });
 
+    // 10-02 入住的 OTA 客人林女士：上一单退房晚 + 布草延迟致入住久等；夜间除湿机故障房间潮湿；次日早餐不足
+    const bk20 = await mkBooking({ room: '203', channel: ota, guest: '林女士', in: '2026-10-02', out: '2026-10-03', adults: 2, breakfast: 2, dietary: '不吃辣', status: 'checked_out', actualIn: '2026-10-02T15:40:00+08:00', actualOut: '2026-10-03T09:50:00+08:00' });
+
     // ---- 事件链 ----
     await this.incidents.save([
       { type: 'late_checkout', bookingId: bk2.id, roomId: bk2.roomId, description: `订单 ${bk2.code} 延迟退房 150 分钟（应 10-02 12:00 前退房），压缩当日保洁窗口`, status: 'resolved', cost: 0, occurredAt: new Date('2026-10-02T14:30:00+08:00'), resolvedAt: new Date('2026-10-02T15:00:00+08:00'), resolution: '保洁顺延，已通知下一单客人延迟入住' },
@@ -175,7 +182,7 @@ export class SeedService implements OnApplicationBootstrap {
       { type: 'ac_failure', bookingId: bk3.id, roomId: bk3.roomId, description: '301 房空调制冷失效，客人夜间投诉，等待维修', status: 'open', cost: 0, occurredAt: new Date('2026-10-02T23:10:00+08:00') },
       { type: 'linen_delay', bookingId: null, roomId: null, description: '布草「床单」20 件延迟送达（应 10-02 09:00 前到，实际 16:20 到），当日保洁换布紧张', status: 'resolved', cost: 0, occurredAt: new Date('2026-10-02T16:20:00+08:00'), resolvedAt: new Date('2026-10-02T17:00:00+08:00'), resolution: '启用备用布草，洗涤厂承诺旺季每日两送' },
       { type: 'extra_guests', bookingId: bk6.id, roomId: bk6.roomId, description: `订单 ${bk6.code} 临时加人：成人 2→3，早餐 3→4 份/天，早餐费重算`, status: 'resolved', cost: 0, occurredAt: new Date('2026-10-02T20:00:00+08:00'), resolvedAt: new Date('2026-10-02T20:05:00+08:00'), resolution: '费用已重算' },
-      { type: 'breakfast_shortage', bookingId: null, roomId: null, description: '2026-10-03 早餐供应不足：需求 15 份，实际备餐 12 份，缺口 3 份', status: 'resolved', cost: 50, occurredAt: new Date('2026-10-03T08:40:00+08:00'), resolvedAt: new Date('2026-10-03T09:30:00+08:00'), resolution: '向受影响客人补偿并加急补做' },
+      { type: 'breakfast_shortage', bookingId: null, roomId: null, description: '2026-10-03 早餐供应不足：需求 17 份，实际备餐 12 份，缺口 5 份', status: 'resolved', cost: 50, occurredAt: new Date('2026-10-03T08:40:00+08:00'), resolvedAt: new Date('2026-10-03T09:30:00+08:00'), resolution: '向受影响客人补偿并加急补做' },
       { type: 'oversell', bookingId: bk18.id, roomId: bk18.roomId, description: `10-01「庭院双床房」超售：电话与 OTA 同时订出 203，物理房量不足，吴女士到店无房等待 2 小时`, status: 'resolved', cost: 200, occurredAt: new Date('2026-10-01T18:30:00+08:00'), resolvedAt: new Date('2026-10-01T20:40:00+08:00'), resolution: '协调同房型升级并免单 ¥200' },
       { type: 'oversell', bookingId: bk14.id, roomId: bk14.roomId, description: `10-04「山景大床房」超售：OTA 连续下单致 101 重复售出（已订 4/物理 3），需提前协调`, status: 'open', cost: 0, occurredAt: new Date('2026-10-03T09:20:00+08:00') },
     ] as any);
@@ -193,7 +200,8 @@ export class SeedService implements OnApplicationBootstrap {
       { roomId: bk2.roomId, bookingId: bk2.id, date: '2026-10-02', dirtiness: 'heavy', status: 'inspected', assigneeId: cleaner2.id, scheduledStart: new Date('2026-10-02T15:00:00+08:00'), startedAt: new Date('2026-10-02T15:10:00+08:00'), finishedAt: new Date('2026-10-02T16:20:00+08:00'), linenUsed: 2 },
       { roomId: bk3.roomId, bookingId: bk3.id, date: '2026-10-03', dirtiness: 'heavy', status: 'pending', linenUsed: 0 },
       { roomId: bk4.roomId, bookingId: bk4.id, date: '2026-10-02', dirtiness: 'light', status: 'inspected', assigneeId: cleaner1.id, scheduledStart: new Date('2026-10-02T11:30:00+08:00'), startedAt: new Date('2026-10-02T11:35:00+08:00'), finishedAt: new Date('2026-10-02T12:05:00+08:00'), linenUsed: 1 },
-      { roomId: bk17.roomId, bookingId: bk17.id, date: '2026-10-02', dirtiness: 'normal', status: 'done', assigneeId: cleaner2.id, scheduledStart: new Date('2026-10-02T13:00:00+08:00'), startedAt: new Date('2026-10-02T13:00:00+08:00'), finishedAt: new Date('2026-10-02T13:45:00+08:00'), linenUsed: 1 },
+      { roomId: bk17.roomId, bookingId: bk17.id, date: '2026-10-02', dirtiness: 'heavy', status: 'done', assigneeId: cleaner2.id, scheduledStart: new Date('2026-10-02T13:00:00+08:00'), startedAt: new Date('2026-10-02T13:00:00+08:00'), finishedAt: new Date('2026-10-02T15:10:00+08:00'), linenUsed: 1, notes: '布草延迟未到，等待备用床单，203 房下一单客人入住等待' },
+      { roomId: bk20.roomId, bookingId: bk20.id, date: '2026-10-03', dirtiness: 'light', status: 'inspected', assigneeId: cleaner1.id, scheduledStart: new Date('2026-10-03T10:00:00+08:00'), startedAt: new Date('2026-10-03T10:00:00+08:00'), finishedAt: new Date('2026-10-03T10:40:00+08:00'), linenUsed: 1 },
     ] as any);
     await this.rooms.update(bk1.roomId, { status: 'inspected' });
     await this.rooms.update(bk2.roomId, { status: 'inspected' });
@@ -216,26 +224,76 @@ export class SeedService implements OnApplicationBootstrap {
     // ---- 早餐备餐 ----
     await this.preps.save([
       { date: '2026-10-02', requiredPortions: 12, preparedPortions: 12, status: 'confirmed', confirmedAt: new Date('2026-10-01T20:00:00+08:00') },
-      { date: '2026-10-03', requiredPortions: 15, preparedPortions: 12, status: 'shortage', confirmedAt: new Date('2026-10-02T20:00:00+08:00'), note: '低估了临时加人，10-04 起按上限备餐' },
+      { date: '2026-10-03', requiredPortions: 17, preparedPortions: 12, status: 'shortage', confirmedAt: new Date('2026-10-02T20:00:00+08:00'), note: '低估了临时加人与 203 房林女士一单，10-04 起按上限备餐' },
     ] as any);
 
-    // ---- 差评与补偿 ----
-    const rv1 = await this.reviews.save(this.reviews.create({ bookingId: bk3.id, rating: 2, category: 'hardware', content: '半夜空调坏了，孩子热醒两次，维修一直没来', compensated: true, createdAt: new Date('2026-10-03T13:00:00+08:00') }));
-    const rv2 = await this.reviews.save(this.reviews.create({ bookingId: bk16.id, rating: 3, category: 'food', content: '八点半下去早餐就没剩什么了，孩子没吃饱', compensated: true, createdAt: new Date('2026-10-03T10:30:00+08:00') }));
-    const rv3 = await this.reviews.save(this.reviews.create({ bookingId: bk18.id, rating: 2, category: 'oversell', content: '到店说没房，拖着行李等了两个多小时才安排', compensated: false, createdAt: new Date('2026-10-02T12:00:00+08:00') }));
-    const rv4 = await this.reviews.save(this.reviews.create({ bookingId: bk4.id, rating: 5, category: 'service', content: '管家很贴心，帮忙安排了儿童餐和加床', compensated: false, createdAt: new Date('2026-10-02T15:00:00+08:00') }));
-    const rv5 = await this.reviews.save(this.reviews.create({ bookingId: bk2.id, rating: 3, category: 'service', content: '退房后押金隔了一天才退，希望加快', compensated: false, createdAt: new Date('2026-10-03T09:00:00+08:00') }));
+    // ---- 除湿设备 ----
+    const [dh1, dh2, dh3] = await this.equipments.save([
+      { code: 'DH-01', name: '203房除湿机', type: 'dehumidifier', roomId: bk20.roomId, status: 'abnormal' },
+      { code: 'DH-02', name: '备用便携除湿机', type: 'dehumidifier', roomId: null, status: 'normal' },
+      { code: 'DH-03', name: '301房除湿机', type: 'dehumidifier', roomId: bk3.roomId, status: 'normal' },
+    ] as any);
+
+    await this.equipLogs.save([
+      { equipmentId: dh1.id, roomId: bk20.roomId, bookingId: bk20.id, date: '2026-10-02', status: 'normal', humidity: 72, note: '入住前巡检，运行正常', recordedAt: new Date('2026-10-02T13:30:00+08:00') },
+      { equipmentId: dh1.id, roomId: bk20.roomId, bookingId: bk20.id, date: '2026-10-02', status: 'abnormal', humidity: 85, note: '夜间客人反馈除湿机有异响且不启动，墙面返潮、床品微湿', recordedAt: new Date('2026-10-02T23:20:00+08:00') },
+      { equipmentId: dh2.id, roomId: bk20.roomId, bookingId: bk20.id, date: '2026-10-03', status: 'normal', humidity: 80, note: '紧急送备用除湿机到 203 房，开除湿模式过夜', recordedAt: new Date('2026-10-03T00:10:00+08:00') },
+      { equipmentId: dh3.id, roomId: bk3.roomId, bookingId: bk3.id, date: '2026-10-02', status: 'normal', humidity: 68, note: '常规巡检', recordedAt: new Date('2026-10-02T20:00:00+08:00') },
+    ] as any);
+
+    // ---- 管家沟通记录（林女士一单完整时间线）----
+    await this.comms.save([
+      { bookingId: bk20.id, channel: 'wechat', direction: 'inbound', at: new Date('2026-10-02T14:05:00+08:00'), content: '我们已经到门口了，房间打扫好了吗？老人小孩拎着行李在等', staffName: '' },
+      { bookingId: bk20.id, channel: 'wechat', direction: 'outbound', at: new Date('2026-10-02T14:10:00+08:00'), content: '实在抱歉！上一单延迟退房、布草也还在送洗途中，预计还要一小时左右。先请您一家到茶室免费喝茶歇歇脚', staffName: '管家·小林' },
+      { bookingId: bk20.id, channel: 'face', direction: 'outbound', at: new Date('2026-10-02T15:40:00+08:00'), content: '房间收拾好后亲自带客人上房，送上欢迎水果并再次致歉', staffName: '管家·小林' },
+      { bookingId: bk20.id, channel: 'wechat', direction: 'inbound', at: new Date('2026-10-02T23:30:00+08:00'), content: '房间太潮了！除湿机嗡嗡响但没风，墙上都是水', staffName: '' },
+      { bookingId: bk20.id, channel: 'wechat', direction: 'outbound', at: new Date('2026-10-02T23:35:00+08:00'), content: '非常抱歉影响休息！值班同事立刻带备用除湿机上来，空调也先开除湿模式', staffName: '管家·小林' },
+      { bookingId: bk20.id, channel: 'wechat', direction: 'inbound', at: new Date('2026-10-03T08:50:00+08:00'), content: '八点半下来早餐基本空了，只剩白粥，孩子没东西吃', staffName: '' },
+      { bookingId: bk20.id, channel: 'phone', direction: 'outbound', at: new Date('2026-10-03T09:00:00+08:00'), content: '电话致歉，安排厨房现做两碗米粉和鸡蛋送到房，费用全免', staffName: '管家·小林' },
+      { bookingId: bk18.id, channel: 'face', direction: 'outbound', at: new Date('2026-10-01T18:40:00+08:00'), content: '超卖致客人到店无房，当面致歉并协调同房型升级', staffName: '管家·小林' },
+    ] as any);
+
+    // ---- 差评、补救与改评观察 ----
+    const rv1 = await this.reviews.save(this.reviews.create({ bookingId: bk3.id, rating: 4, originalRating: 2, category: 'hardware', tags: '', content: '半夜空调坏了，孩子热醒两次，维修一直没来', compensated: true, monitorStatus: 'revised', revisedRating: 4, revisedContent: '管家当晚送了补偿券，维修次日一早就到了，态度很好，改到 4 分', revisedAt: new Date('2026-10-03T18:00:00+08:00'), createdAt: new Date('2026-10-03T13:00:00+08:00') }));
+    const rv2 = await this.reviews.save(this.reviews.create({ bookingId: bk16.id, rating: 3, originalRating: 3, category: 'food', tags: 'breakfast', content: '八点半下去早餐就没剩什么了，孩子没吃饱', compensated: true, monitorStatus: 'unchanged', monitoredAt: new Date('2026-10-03T18:00:00+08:00'), createdAt: new Date('2026-10-03T10:30:00+08:00') }));
+    const rv3 = await this.reviews.save(this.reviews.create({ bookingId: bk18.id, rating: 4, originalRating: 2, category: 'oversell', tags: 'wait', content: '到店说没房，拖着行李等了两个多小时才安排', compensated: true, monitorStatus: 'revised', revisedRating: 4, revisedContent: '退款到账很快，升级的房间也不错，愿意下次再来', revisedAt: new Date('2026-10-03T11:00:00+08:00'), createdAt: new Date('2026-10-02T12:00:00+08:00') }));
+    const rv4 = await this.reviews.save(this.reviews.create({ bookingId: bk4.id, rating: 5, originalRating: 5, category: 'service', tags: '', content: '管家很贴心，帮忙安排了儿童餐和加床', compensated: false, monitorStatus: 'none', createdAt: new Date('2026-10-02T15:00:00+08:00') }));
+    const rv5 = await this.reviews.save(this.reviews.create({ bookingId: bk2.id, rating: 3, originalRating: 3, category: 'service', tags: '', content: '退房后押金隔了一天才退，希望加快', compensated: false, monitorStatus: 'observing', createdAt: new Date('2026-10-03T09:00:00+08:00') }));
+    // 林女士差评：早餐少 + 房间潮湿 + 入住等待久，店主刚下发补偿券，等待客人回应与改评
+    const rv6 = await this.reviews.save(this.reviews.create({ bookingId: bk20.id, rating: 2, originalRating: 2, category: 'service', tags: 'breakfast,damp,wait', content: '早餐没什么可吃的，房间一晚上都潮，除湿机还是坏的，到店又等了一个半小时才进房', compensated: true, monitorStatus: 'observing', createdAt: new Date('2026-10-03T12:30:00+08:00') }));
 
     await this.incidents.save([
-      { type: 'bad_review', bookingId: bk3.id, roomId: bk3.roomId, description: '差评（2分/hardware）：半夜空调坏了，孩子热醒两次', status: 'resolved', cost: 100, occurredAt: new Date('2026-10-03T13:00:00+08:00'), resolvedAt: new Date('2026-10-03T14:00:00+08:00'), resolution: '已补偿 补偿券 VC7K2Q9P ¥100' },
-      { type: 'bad_review', bookingId: bk16.id, roomId: bk16.roomId, description: '差评（3分/food）：早餐八点半就没东西了', status: 'resolved', cost: 50, occurredAt: new Date('2026-10-03T10:30:00+08:00'), resolvedAt: new Date('2026-10-03T11:00:00+08:00'), resolution: '已补偿现金 ¥50' },
-      { type: 'bad_review', bookingId: bk18.id, roomId: bk18.roomId, description: '差评（2分/oversell）：到店没房等了两小时', status: 'open', cost: 0, occurredAt: new Date('2026-10-02T12:00:00+08:00') },
+      { type: 'bad_review', bookingId: bk3.id, roomId: bk3.roomId, description: '差评（2分/hardware）：半夜空调坏了，孩子热醒两次', status: 'resolved', cost: 100, occurredAt: new Date('2026-10-03T13:00:00+08:00'), resolvedAt: new Date('2026-10-03T15:00:00+08:00'), resolution: '补偿券已被客人接受，客人已改评 2→4 分' },
+      { type: 'bad_review', bookingId: bk16.id, roomId: bk16.roomId, description: '差评（3分/food）：早餐八点半就没东西了', status: 'resolved', cost: 50, occurredAt: new Date('2026-10-03T10:30:00+08:00'), resolvedAt: new Date('2026-10-03T11:00:00+08:00'), resolution: '已现金补偿 ¥50；观察期结束客人未改评' },
+      { type: 'bad_review', bookingId: bk18.id, roomId: bk18.roomId, description: '差评（2分/oversell）：到店没房等了两小时', status: 'resolved', cost: 200, occurredAt: new Date('2026-10-02T12:00:00+08:00'), resolvedAt: new Date('2026-10-02T21:20:00+08:00'), resolution: '客人接受退款 ¥200，已改评 2→4 分，渠道评分恢复' },
       { type: 'bad_review', bookingId: bk2.id, roomId: bk2.roomId, description: '差评（3分/service）：押金退回慢', status: 'open', cost: 0, occurredAt: new Date('2026-10-03T09:00:00+08:00') },
+      { type: 'bad_review', bookingId: bk20.id, roomId: bk20.roomId, description: '差评（2分/service，归因：早餐少、房间潮湿、入住等待久）：早餐没什么可吃的，房间一晚都潮，到店等了一个半小时', status: 'processing', cost: 0, occurredAt: new Date('2026-10-03T12:30:00+08:00'), resolution: '店主决定补偿券 ¥150，等待客人回应' },
     ] as any);
 
+    // 补救单：吴女士退款（接受+改评）、王先生一家补偿券（接受+改评）、林女士补偿券（待回应）
+    const rm1 = await this.remediations.save(this.remediations.create({
+      reviewId: rv1.id, bookingId: bk3.id, channelId: bk3.channelId, action: 'voucher', amount: 100,
+      voucherCode: 'VC7K2Q9P', note: '空调故障差评补救', status: 'accepted', decidedBy: '店主·陈山',
+      decidedAt: new Date('2026-10-03T14:00:00+08:00'), guestRespondedAt: new Date('2026-10-03T15:00:00+08:00'),
+      guestNote: '券已收下，维修跟上就改评',
+    }));
+    await this.remediations.save(this.remediations.create({
+      reviewId: rv3.id, bookingId: bk18.id, channelId: bk18.channelId, action: 'refund', amount: 200,
+      voucherCode: null, note: '超卖等待 2 小时，房费部分退还', status: 'accepted', decidedBy: '店主·陈山',
+      decidedAt: new Date('2026-10-02T20:50:00+08:00'), guestRespondedAt: new Date('2026-10-02T21:20:00+08:00'),
+      guestNote: '接受退款，愿意修改评价',
+    }));
+    const rm3 = await this.remediations.save(this.remediations.create({
+      reviewId: rv6.id, bookingId: bk20.id, channelId: bk20.channelId, action: 'voucher', amount: 150,
+      voucherCode: 'VC3Q8M2X', note: '早餐不足+房间潮湿+入住久等综合补救，附管家手写致歉卡',
+      status: 'proposed', decidedBy: '店主·陈山', decidedAt: new Date('2026-10-03T14:30:00+08:00'),
+    }));
+
     await this.compensations.save([
-      { reviewId: rv1.id, bookingId: bk3.id, type: 'voucher', amount: 100, voucherCode: 'VC7K2Q9P', status: 'issued', reason: '空调故障差评补偿', createdAt: new Date('2026-10-03T14:00:00+08:00') },
-      { reviewId: rv2.id, bookingId: bk16.id, type: 'cash', amount: 50, voucherCode: null, status: 'issued', reason: '早餐不足差评补偿', createdAt: new Date('2026-10-03T11:00:00+08:00') },
+      { reviewId: rv1.id, remediationId: rm1.id, bookingId: bk3.id, type: 'voucher', amount: 100, voucherCode: 'VC7K2Q9P', status: 'issued', reason: '差评补救·补偿券：空调故障差评补救', createdAt: new Date('2026-10-03T14:00:00+08:00') },
+      { reviewId: rv2.id, remediationId: null, bookingId: bk16.id, type: 'cash', amount: 50, voucherCode: null, status: 'issued', reason: '早餐不足差评补偿', createdAt: new Date('2026-10-03T11:00:00+08:00') },
+      { reviewId: rv3.id, remediationId: null, bookingId: bk18.id, type: 'refund', amount: 200, voucherCode: null, status: 'issued', reason: '超卖免单退款 ¥200', createdAt: new Date('2026-10-02T20:50:00+08:00') },
+      { reviewId: rv6.id, remediationId: rm3.id, bookingId: bk20.id, type: 'voucher', amount: 150, voucherCode: 'VC3Q8M2X', status: 'issued', reason: '差评补救·补偿券：早餐不足+房间潮湿+入住久等综合补救', createdAt: new Date('2026-10-03T14:30:00+08:00') },
     ] as any);
   }
 }

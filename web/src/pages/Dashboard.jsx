@@ -32,9 +32,13 @@ export default function Dashboard() {
           { title: '总收入(¥)', value: kpi.revenue },
           { title: 'ADR 平均房价(¥)', value: kpi.adr },
           { title: 'RevPAR(¥)', value: kpi.revpar },
-          { title: '补偿成本(¥)', value: kpi.compensationCost },
+          { title: '真实补偿成本(¥)', value: kpi.compensationCost },
           { title: '差评数', value: kpi.badReviewCount, suffix: `/${kpi.reviewCount}` },
           { title: '平均评分', value: kpi.avgRating },
+          { title: '补救接受率', value: kpi.remediationAcceptRate, suffix: `%（${kpi.remediationAccepted}/${kpi.remediationCount}）` },
+          { title: '待客人回应', value: kpi.remediationPending, suffix: `单，拒绝 ${kpi.remediationRejected}` },
+          { title: '已改评恢复', value: kpi.revisedCount, suffix: `单，观察中 ${kpi.monitoringCount}` },
+          { title: '评分恢复', value: kpi.ratingRecovered, suffix: '分（未改评 ' + kpi.unchangedCount + '）' },
         ].map((s) => (
           <Col xs={12} md={6} key={s.title}>
             <Card><Statistic title={s.title} value={s.value} suffix={s.suffix} precision={String(s.value).includes('.') ? 2 : 0} /></Card>

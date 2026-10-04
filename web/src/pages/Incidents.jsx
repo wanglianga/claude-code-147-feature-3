@@ -4,18 +4,21 @@ import {
   Table, Tabs, Tag, message,
 } from 'antd';
 import dayjs from 'dayjs';
-import api, { INCIDENT_TYPES, INCIDENT_STATUS, REVIEW_CATEGORIES } from '../api';
+import { useNavigate } from 'react-router-dom';
+import api, {
+  INCIDENT_TYPES, INCIDENT_STATUS, MONITOR_STATUS, REMEDIATION_ACTIONS,
+  REMEDIATION_STATUS, REVIEW_CATEGORIES, REVIEW_TAGS,
+} from '../api';
 
 export default function Incidents() {
+  const navigate = useNavigate();
   const [incidents, setIncidents] = useState([]);
   const [reviews, setReviews] = useState([]);
   const [compensations, setCompensations] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [rooms, setRooms] = useState([]);
   const [createOpen, setCreateOpen] = useState(false);
-  const [compTarget, setCompTarget] = useState(null);
   const [form] = Form.useForm();
-  const [compForm] = Form.useForm();
 
   const load = async () => {
     const [i, r, c, b, rm] = await Promise.all([
@@ -59,18 +62,29 @@ export default function Incidents() {
         },
         {
           key: 'reviews',
-          label: `差评与补偿 (${reviews.filter((r) => r.rating <= 3 && !r.compensated).length} 待补偿)`,
+          label: `差评与补救 (${reviews.filter((r) => r.rating <= 3 && r.remediation?.status !== 'accepted' && r.monitorStatus !== 'revised').length} 待跟进)`,
           children: (
-            <Table dataSource={reviews} rowKey="id" pagination={false} columns={[
-              { title: '订单', dataIndex: 'bookingCode', width: 100 },
-              { title: '客人', dataIndex: 'guestName', width: 100 },
-              { title: '渠道', dataIndex: 'channel', width: 90 },
-              { title: '评分', dataIndex: 'rating', width: 80, render: (v) => <span style={{ color: v <= 3 ? '#cf1322' : '#2f6b4f', fontWeight: 700 }}>{v}分</span> },
-              { title: '归因', dataIndex: 'category', width: 90, render: (v) => <Tag color={{ hardware: 'volcano', service: 'gold', oversell: 'red', food: 'purple' }[v]}>{REVIEW_CATEGORIES[v]}</Tag> },
-              { title: '内容', dataIndex: 'content' },
-              { title: '补偿', dataIndex: 'compensated', width: 100, render: (v) => v ? <Tag color="green">已补偿</Tag> : <Tag color="red">未补偿</Tag> },
-              { title: '操作', width: 100, render: (_, r) => !r.compensated && r.rating <= 3 && (
-                <Button size="small" type="primary" onClick={() => { setCompTarget(r); compForm.resetFields(); }}>发放补偿</Button>
+            <Table dataSource={reviews} rowKey="id" pagination={{ pageSize: 10 }} columns={[
+              { title: '订单', dataIndex: 'bookingCode', width: 90 },
+              { title: '客人', dataIndex: 'guestName', width: 90 },
+              { title: '渠道', dataIndex: 'channel', width: 80 },
+              { title: '评分', dataIndex: 'rating', width: 90, render: (v, r) => r.originalRating && r.originalRating !== v ? (
+                <Space size={4}><span style={{ textDecoration: 'line-through', color: '#999' }}>{r.originalRating}</span><b style={{ color: '#2f6b4f' }}>{v}分</b></Space>
+              ) : <span style={{ color: v <= 3 ? '#cf1322' : '#2f6b4f', fontWeight: 700 }}>{v}分</span> },
+              { title: '归因', dataIndex: 'category', width: 70, render: (v) => <Tag color={{ hardware: 'volcano', service: 'gold', oversell: 'red', food: 'purple' }[v]}>{REVIEW_CATEGORIES[v]}</Tag> },
+              { title: '归因标签', dataIndex: 'tagsList', width: 170, render: (tags) => tags?.length ? <Space size={4} wrap>{tags.map((t) => <Tag key={t} color="volcano">{REVIEW_TAGS[t] || t}</Tag>)}</Space> : '-' },
+              { title: '内容', dataIndex: 'content', ellipsis: true },
+              { title: '补救', width: 130, render: (_, r) => r.remediation ? (
+                <Space size={4} direction="vertical" style={{ lineHeight: 1.2 }}>
+                  <Tag color={REMEDIATION_ACTIONS[r.remediation.action]?.color}>{REMEDIATION_ACTIONS[r.remediation.action]?.text}{r.remediation.amount ? ` ¥${r.remediation.amount}` : ''}</Tag>
+                  <Tag color={REMEDIATION_STATUS[r.remediation.status]?.color}>{REMEDIATION_STATUS[r.remediation.status]?.text}</Tag>
+                </Space>
+              ) : (r.rating <= 3 ? <Tag color="red">待决策</Tag> : '-') },
+              { title: '改评观察', dataIndex: 'monitorStatus', width: 110, render: (v) => <Tag color={MONITOR_STATUS[v]?.color}>{MONITOR_STATUS[v]?.text}</Tag> },
+              { title: '操作', width: 110, render: (_, r) => (
+                <Button size="small" type={r.rating <= 3 ? 'primary' : 'default'} onClick={() => navigate(`/reviews/${r.id}`)}>
+                  {r.rating <= 3 ? '进入复盘补救' : '查看复盘'}
+                </Button>
               ) },
             ]} />
           ),
@@ -120,26 +134,6 @@ export default function Incidents() {
           </Form.Item>
           <Form.Item name="cost" label="损失/成本（¥，宠物损坏将从押金扣除）" initialValue={0}>
             <InputNumber min={0} style={{ width: '100%' }} />
-          </Form.Item>
-        </Form>
-      </Modal>
-
-      <Modal title={compTarget ? `补偿差评：${compTarget.guestName}（${compTarget.rating}分/${REVIEW_CATEGORIES[compTarget.category]}）` : ''}
-        open={!!compTarget} onCancel={() => setCompTarget(null)} onOk={() => compForm.submit()} okText="发放补偿" destroyOnClose>
-        <Form form={compForm} layout="vertical" initialValues={{ type: 'voucher', amount: 100 }}
-          onFinish={async (v) => {
-            await api.post(`/compensations/for-review/${compTarget.id}`, v);
-            message.success('补偿已发放，差评事件已关闭');
-            setCompTarget(null); load();
-          }}>
-          <Form.Item name="type" label="补偿方式" rules={[{ required: true }]}>
-            <Select options={[{ value: 'voucher', label: '补偿券（自动生成券码）' }, { value: 'cash', label: '现金' }, { value: 'refund', label: '房费退款' }]} />
-          </Form.Item>
-          <Form.Item name="amount" label="金额（¥）" rules={[{ required: true }]}>
-            <InputNumber min={1} style={{ width: '100%' }} />
-          </Form.Item>
-          <Form.Item name="reason" label="补偿原因">
-            <Input placeholder="默认：差评补偿" />
           </Form.Item>
         </Form>
       </Modal>

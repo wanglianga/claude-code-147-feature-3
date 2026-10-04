@@ -31,6 +31,29 @@ export const INCIDENT_TYPES = {
   oversell: '渠道超卖', bad_review: '差评', other: '其他',
 };
 export const REVIEW_CATEGORIES = { hardware: '硬件', service: '服务', oversell: '超卖', food: '餐食' };
+export const REVIEW_TAGS = {
+  breakfast: '早餐少', damp: '房间潮湿', wait: '入住等待久', linen: '布草延迟', cleaning: '保洁完成晚',
+};
+export const MONITOR_STATUS = {
+  observing: { text: '补救后观察中', color: 'orange' },
+  revised: { text: '客人已改评', color: 'green' },
+  unchanged: { text: '未改评·观察结束', color: 'default' },
+  none: { text: '无需观察', color: 'default' },
+};
+export const REMEDIATION_ACTIONS = {
+  refund: { text: '退款', color: 'red' },
+  voucher: { text: '补偿券', color: 'gold' },
+  call: { text: '电话道歉', color: 'blue' },
+  none: { text: '不予补偿', color: 'default' },
+};
+export const REMEDIATION_STATUS = {
+  proposed: { text: '待客人回应', color: 'orange' },
+  accepted: { text: '客人已接受', color: 'green' },
+  rejected: { text: '客人拒绝', color: 'red' },
+  void: { text: '已作废', color: 'default' },
+  closed: { text: '不予补偿·已闭环', color: 'default' },
+};
+export const COMM_CHANNEL = { face: '当面', phone: '电话', wechat: '微信' };
 export const BOOKING_STATUS = {
   booked: { text: '待入住', color: 'blue' },
   checked_in: { text: '在住', color: 'green' },

@@ -6,7 +6,7 @@ import { InjectRepository, TypeOrmModule } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import {
   Booking, Channel, CleaningTask, Compensation, DailyInventory, DailyPrice,
-  Incident, Review, Room,
+  Incident, Remediation, Review, Room,
 } from '../entities';
 import { computeSettlement } from '../common/settlement';
 import { CurrentUser } from '../common/auth';
@@ -43,6 +43,7 @@ export class BookingsController {
     @InjectRepository(Incident) private incidents: Repository<Incident>,
     @InjectRepository(Review) private reviews: Repository<Review>,
     @InjectRepository(Compensation) private compensations: Repository<Compensation>,
+    @InjectRepository(Remediation) private remediations: Repository<Remediation>,
     private dataSource: DataSource,
   ) {}
 
@@ -147,13 +148,17 @@ export class BookingsController {
       where: { id }, relations: ['channel', 'room', 'roomType'],
     });
     if (!booking) throw new NotFoundException('订单不存在');
-    const [incidents, review, compensations, cleaningTask] = await Promise.all([
+    const [incidents, review, allComps, cleaningTask, rems] = await Promise.all([
       this.incidents.find({ where: { bookingId: id }, order: { occurredAt: 'ASC' } }),
       this.reviews.findOne({ where: { bookingId: id } }),
       this.compensations.find({ where: { bookingId: id } }),
       this.cleaning.findOne({ where: { bookingId: id }, relations: ['assignee'] }),
+      this.remediations.find({ where: { bookingId: id }, order: { id: 'ASC' } }),
     ]);
-    return { ...booking, incidents, review, compensations, cleaningTask, settlement: computeSettlement(booking, compensations) };
+    const acceptedRemIds = new Set(rems.filter((m) => m.status === 'accepted').map((m) => m.id));
+    const compensations = allComps.filter((c) => c.status !== 'cancelled'
+      && (c.remediationId === null || acceptedRemIds.has(c.remediationId)));
+    return { ...booking, incidents, review, compensations, remediations: rems, cleaningTask, settlement: computeSettlement(booking, compensations) };
   }
 
   @Post(':id/check-in')
@@ -249,7 +254,7 @@ export class BookingsController {
 
 @Module({
   imports: [TypeOrmModule.forFeature([
-    Booking, Room, Channel, DailyInventory, DailyPrice, CleaningTask, Incident, Review, Compensation,
+    Booking, Room, Channel, DailyInventory, DailyPrice, CleaningTask, Incident, Review, Compensation, Remediation,
   ])],
   controllers: [BookingsController],
 })
